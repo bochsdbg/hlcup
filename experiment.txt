@@ -1,0 +1,208 @@
+
+int Nsendfile(int fromfd, int tofd, const char *buf, size_t count) {
+    off_t offset;
+#if defined(__FreeBSD__) || (defined(__APPLE__) && defined(__MACH__) && defined(MAC_OS_X_VERSION_10_6))
+    off_t sent;
+#endif
+    register size_t nleft;
+    register ssize_t r;
+
+    nleft = count;
+    while (nleft > 0) {
+        offset = count - nleft;
+#ifdef linux
+        r = sendfile(tofd, fromfd, &offset, nleft);
+        if (r > 0) nleft -= r;
+#elif defined(__FreeBSD__)
+        r = sendfile(fromfd, tofd, offset, nleft, NULL, &sent, 0);
+        nleft -= sent;
+#elif defined(__APPLE__) && defined(__MACH__) && defined(MAC_OS_X_VERSION_10_6) /* OS X */
+        sent = nleft;
+        r = sendfile(fromfd, tofd, offset, &sent, NULL, 0);
+        nleft -= sent;
+#else
+        /* Shouldn't happen. */
+        r = -1;
+        errno = ENOSYS;
+#endif
+        if (r < 0) {
+            switch (errno) {
+            case EINTR:
+            case EAGAIN:
+#if (EAGAIN != EWOULDBLOCK)
+            case EWOULDBLOCK:
+#endif
+                if (count == nleft) return -1;
+                return count - nleft;
+
+            case ENOBUFS:
+            case ENOMEM: return -1;
+
+            default: return -1;
+            }
+        }
+#ifdef linux
+        else if (r == 0)
+            return -1;
+#endif
+    }
+    return count;
+}
+
+void write_test_ok_response(int fd);
+
+static int buf_fd;
+static const int blksize = 1024 * 1024;
+static char *buffer;
+static int buf_len;
+
+
+
+
+static bool init = false;
+if (!init) {
+    init = true;
+    char ttt[] = "/tmp/hlcup.XXXXXX";
+    buf_fd = mkstemp(ttt);
+    ftruncate(buf_fd, blksize);
+    buffer = (char *)mmap(0, blksize, PROT_READ | PROT_WRITE, MAP_SHARED, buf_fd, 0);
+    if (buffer == MAP_FAILED) {
+        perror("mmap()");
+        exit(1);
+    }
+    std::string data =
+        "HTTP/1.1 400 Bad Request\r\n"
+        "Content-Type: text/plain\r\n"
+        "Content-Length: 0\r\n"
+        "\r\n";
+    memcpy(buffer, data.data(), data.size());
+    buf_len = data.size();
+
+    char bbb[100] = {0};
+    ::read(buf_fd, bbb, buf_len);
+    std::cout << bbb;
+}
+
+
+/*
+bool update(int32_t id, const User &u) {
+    using Param = User::Param;
+    if (u.mask.test(Param::kId)) {
+        return false;
+    }
+    if (u.mask.test(Param::kBirthDate)) {
+        users[id].birth_date = u.birth_date;
+        users_ages[id] = userAge(id);
+    }
+    if (u.mask.test(Param::kEmail)) {
+        users[id].email = u.email;
+    }
+    if (u.mask.test(Param::kFirstName)) {
+        users[id].first_name = u.first_name;
+    }
+    if (u.mask.test(Param::kGender)) {
+        users[id].gender = u.gender;
+        users_ages[id] = userAge(id);
+    }
+    if (u.mask.test(Param::kLastName)) {
+        users[id].last_name = u.last_name;
+    }
+    return true;
+}
+bool update(int32_t id, const Location &l) {
+    using Param = Location::Param;
+
+    if (l.mask.test(Param::kId)) {
+        return false;
+    }
+    if (l.mask.test(Param::kCity)) {
+        locations[id].city = l.city;
+    }
+    if (l.mask.test(Param::kCountry)) {
+        locations[id].country = l.country;
+    }
+    if (l.mask.test(Param::kDistance)) {
+        locations[id].distance = l.distance;
+    }
+    if (l.mask.test(Param::kPlace)) {
+        locations[id].place = l.place;
+    }
+    return true;
+}
+
+std::string get_user_visits(int32_t uid) {
+    std::string s;
+    for (int32_t vid : users_visits[uid]) {
+        VisitItem &v = visits[vid];
+        s += std::to_string(vid) + " " + std::to_string(v.visited_at) + " (" + locations[v.location_id].city + " -- " + locations[v.location_id].place +
+             ") ";
+    }
+    return s;
+}
+
+bool update(int32_t id, const Visit &v) {
+    using Param = Visit::Param;
+
+    if (v.mask.test(Param::kId)) {
+        return false;
+    }
+    if (v.mask.test(Param::kLocationId)) {
+        updateVisitLocation(id, visits[id].location_id, v.location_id);
+        visits[id].location_id = v.location_id;
+    }
+    if (v.mask.test(Param::kMark)) {
+        visits[id].mark = v.mark;
+    }
+    if (v.mask.test(Param::kUserId)) {
+        updateVisitUser(id, visits[id].user_id, v.user_id);
+        visits[id].user_id = v.user_id;
+    }
+    if (v.mask.test(Param::kVisitedAt)) {
+        int32_t uid = visits[id].user_id;
+        users_visits_lock[uid % kSpinLockPoolSize].lock();
+        //            erase_sorted(users_visits[uid], id, UsersVisitsCmp());
+        users_visits[uid].erase(uid);
+        visits[id].visited_at = v.visited_at;
+        //            insert_sorted(users_visits[uid], id, UsersVisitsCmp());
+        users_visits[uid].insert(uid);
+        users_visits_lock[uid % kSpinLockPoolSize].unlock();
+    }
+    return true;
+}
+
+bool insert(const User &u) {
+    if (!u.mask.all()) {
+        return false;
+    }
+    insert_no_check(u);
+    return true;
+}
+
+bool insert(const Location &l) {
+    if (locations[l.id].id != Entity::kInvalidId) {
+        return false;
+    }
+    if (!l.mask.all()) {
+        return false;
+    }
+    insert_no_check(l);
+    return true;
+}
+
+bool insert(const Visit &v) {
+    if (visits[v.id].id != Entity::kInvalidId) {
+        return false;
+    }
+    if (!v.mask.all()) {
+        return false;
+    }
+    insert_no_check(v);
+    updateVisitLocation(v.id, Entity::kInvalidId, v.location_id);
+    updateVisitUser(v.id, Entity::kInvalidId, v.user_id);
+    return true;
+}
+*/
+//    void insert_no_check(const User &e) {
+//        users[e.id] = e;
+//        users_ages[e.id] = userAge(e.id);
+//    }
